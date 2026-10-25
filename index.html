@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Microgrid Dispatch Console</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+:root{--bg:#f3f6f4;--card:#fff;--ink:#14231c;--mute:#5d6f66;--line:#d5dfd9;--grid:#1f6f5c;--ren:#c27803;--bad:#b42318;--badbg:#fdecea}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1a15;--card:#16251e;--ink:#e6f0ea;--mute:#93a79c;--line:#294036;--grid:#4cc3a4;--ren:#f0b44a;--bad:#ff8a7a;--badbg:#3a1a16}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 "Segoe UI",system-ui,sans-serif}
+main{max-width:1000px;margin:0 auto;padding:20px 16px 48px}
+h1{font-size:1.6rem;margin:0 0 4px}
+.sub{color:var(--mute);margin:0 0 18px}
+.bar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:16px}
+button,.file{background:var(--grid);color:#fff;border:0;border-radius:8px;padding:10px 16px;font:inherit;cursor:pointer}
+.file{background:transparent;color:var(--ink);border:1px solid var(--line)}
+button:focus-visible,.file:focus-within{outline:3px solid var(--ren);outline-offset:2px}
+input[type=file]{display:none}
+#banner{display:none;background:var(--badbg);color:var(--bad);border:1px solid var(--bad);border-radius:8px;padding:12px 14px;margin-bottom:16px;font-weight:600}
+#err{color:var(--bad);margin-bottom:12px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:16px}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px}
+.stat b{display:block;font-size:1.5rem}
+.stat span{color:var(--mute);font-size:.85rem}
+.panel{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:16px}
+.wrap{position:relative;height:300px}
+.scroll{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:.92rem}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+.badge{display:inline-block;padding:2px 10px;border-radius:99px;font-size:.82rem;font-weight:600}
+.Main{background:color-mix(in srgb,var(--grid) 18%,transparent);color:var(--grid)}
+.Ren{background:color-mix(in srgb,var(--ren) 20%,transparent);color:var(--ren)}
+.ov{color:var(--bad);font-weight:700}
+#src{color:var(--mute);font-size:.85rem}
+</style>
+</head>
+<body>
+<main>
+<h1>Microgrid dispatch console</h1>
+<p class="sub">24-hour demand forecast and power-source schedule. Grid mode is set per hour from predicted demand and time of day.</p>
+<div class="bar">
+  <button id="sample">Run sample forecast</button>
+  <label class="file">Upload CSV<input id="csv" type="file" accept=".csv"></label>
+  <span id="src"></span>
+</div>
+<div id="err" role="alert"></div>
+<div id="banner" role="alert"></div>
+<div class="stats">
+  <div class="stat"><b id="s1">–</b><span>Peak demand (kW)</span></div>
+  <div class="stat"><b id="s2">–</b><span>Hours on Renewable Storage</span></div>
+  <div class="stat"><b id="s3">–</b><span>Overload hours</span></div>
+  <div class="stat"><b id="s4">–</b><span>Lowest battery charge</span></div>
+</div>
+<div class="panel"><div class="wrap"><canvas id="chart"></canvas></div></div>
+<div class="panel scroll"><table><thead><tr><th>Hour</th><th>Demand (kW)</th><th>Power source</th><th>Alert</th><th>Battery</th></tr></thead><tbody id="rows"><tr><td colspan="5">Run the sample forecast or upload a CSV with timestamp, ambient_temp_c, humidity_pct and solar_irradiance_wm2.</td></tr></tbody></table></div>
+<p class="sub">Battery assumptions: 1,200 kWh, starts full, discharges by the hour's demand in Renewable Storage mode, recharges 60 kW per hour on Main Grid.</p>
+</main>
+<script>
+let chart;
+const $=id=>document.getElementById(id);
+async function run(file){
+  $('err').textContent='';
+  const fd=new FormData(); if(file) fd.append('file',file);
+  let res; try{res=await fetch('/api/forecast',{method:'POST',body:fd});}catch(e){$('err').textContent='Could not reach the server.';return;}
+  const data=await res.json();
+  if(!res.ok){$('err').textContent=data.error||'Forecast failed.';return;}
+  render(data);
+}
+function render({rows,source}){
+  $('src').textContent='Source: '+source;
+  const ov=rows.filter(r=>r.overload), ren=rows.filter(r=>r.mode==='Renewable Storage');
+  $('s1').textContent=Math.max(...rows.map(r=>r.demand_kw)).toFixed(1);
+  $('s2').textContent=ren.length+' of '+rows.length;
+  $('s3').textContent=ov.length;
+  $('s4').textContent=Math.min(...rows.map(r=>r.soc_pct)).toFixed(0)+'%';
+  const b=$('banner');
+  if(ov.length){b.style.display='block';b.textContent='Critical overload: demand reaches 200 kW or more at '+ov.map(r=>r.timestamp.slice(11,16)).join(', ')+'.';}
+  else b.style.display='none';
+  $('rows').innerHTML=rows.map(r=>`<tr><td>${r.timestamp.slice(0,16)}</td><td>${r.demand_kw.toFixed(1)}</td><td><span class="badge ${r.mode==='Main Grid'?'Main':'Ren'}">${r.mode}</span></td><td>${r.overload?'<span class="ov">Critical overload</span>':'–'}</td><td>${r.soc_pct}%</td></tr>`).join('');
+  const labels=rows.map(r=>r.timestamp.slice(5,16));
+  const css=getComputedStyle(document.documentElement), c=v=>css.getPropertyValue(v).trim();
+  if(chart) chart.destroy();
+  chart=new Chart($('chart'),{type:'line',data:{labels,datasets:[
+    {label:'Predicted demand (kW)',data:rows.map(r=>r.demand_kw),borderColor:c('--grid'),backgroundColor:c('--grid'),tension:.25,pointRadius:3,yAxisID:'y'},
+    {label:'160 kW switch limit',data:rows.map(()=>160),borderColor:c('--ren'),borderDash:[6,4],pointRadius:0,yAxisID:'y'},
+    {label:'200 kW overload',data:rows.map(()=>200),borderColor:c('--bad'),borderDash:[6,4],pointRadius:0,yAxisID:'y'},
+    {label:'Battery charge (%)',data:rows.map(r=>r.soc_pct),borderColor:c('--mute'),borderWidth:1.5,pointRadius:0,yAxisID:'y2'}
+  ]},options:{responsive:true,maintainAspectRatio:false,scales:{y:{title:{display:true,text:'kW'}},y2:{position:'right',min:0,max:100,grid:{drawOnChartArea:false},title:{display:true,text:'%'}}},plugins:{legend:{labels:{color:c('--ink')}}}}});
+}
+$('sample').onclick=()=>run(null);
+$('csv').onchange=e=>e.target.files[0]&&run(e.target.files[0]);
+</script>
+</body>
+</html>
